@@ -1,0 +1,4 @@
+patchright>=1.60.0
+humancursor-playwright==0.1.1
+python-magic>=0.4.27
+python-magic-bin>=0.4.14; platform_system == "Windows"

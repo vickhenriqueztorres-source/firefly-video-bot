@@ -1,0 +1,48 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches & Test artifacts
+.pytest_cache/
+.pytest_tmp/
+.pytest_verify_*/
+.ruff_cache/
+*.egg-info/
+.coverage
+
+# Virtual Environment
+.venv/
+env/
+venv/
+
+# Chrome Profile & Session (CRITICAL: Never commit browser cookies or profile)
+data/
+data/**
+
+# Ephemeral Media, Downloads & Output
+downloads/
+screenshots/
+saida/
+imagens/
+output/
+logs/
+*.log
+
+# Databases
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+firefly_jobs.db
+
+# Secrets & Local Config
+.env
+.env.*
+.claude/
+*.lock
+
+# OS Files
+.DS_Store
+Thumbs.db

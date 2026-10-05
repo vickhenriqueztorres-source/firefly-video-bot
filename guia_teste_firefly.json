@@ -1,0 +1,13 @@
+{
+  "model": "Firefly Video",
+  "resolution": "720p",
+  "aspect_ratio": "9:16",
+  "duration_seconds": 5,
+  "items": [
+    {
+      "name": "video_teste_firefly_1",
+      "image": "imagem_teste_1.png",
+      "prompt": "Cinematic slow push-in through a futuristic neon city at dusk, subtle forward camera movement toward the sports car, gentle reflections moving across the wet pavement, soft atmospheric haze, realistic lighting, smooth motion, strong depth, no warping, no flicker, preserve the original composition."
+    }
+  ]
+}

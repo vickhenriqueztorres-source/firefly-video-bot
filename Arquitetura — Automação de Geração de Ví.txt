@@ -1,0 +1,120 @@
+Arquitetura — Automação de Geração de Vídeo no Adobe Firefly
+
+Versão: 1.0
+Escopo: automação via navegador (Playwright), sem uso de API oficial, conta única, execução com sessão já logada manualmente.
+
+1. Visão geral
+
+Site alvo é pesado, com geração assíncrona de minutos por vídeo, sujeito a anti-bot e sem contrato de API. Isso descarta qualquer arquitetura "script linear": um crash no job 47 de 200 não pode custar os 46 anteriores, e nenhuma sincronização pode depender de tempo fixo (sleep) ou de sinal de rede (networkidle nunca dispara nesse tipo de app).
+
+A arquitetura escolhida é fila durável + coordenador de abas resiliente + watchdog de processo, com um princípio central que atravessa todo o sistema:
+
+Nunca inferir sucesso por ausência de sinal. Todo estado da tela é verificado positivamente e de forma mutuamente exclusiva. Se nenhum estado conhecido bate, o sistema trata como falha-a-investigar — nunca como sucesso silencioso.
+
+2. Componentes
+2.1 Job Store (SQLite)
+
+Fonte única da verdade. Cada prompt é uma linha com:
+
+campo	descrição
+id	identificador do job
+prompt	texto de entrada
+status	pending → claimed → generating → done / failed-content / failed-infra / dead
+attempts	contador de tentativas
+output_path	caminho do arquivo baixado
+error	última mensagem de erro
+claimed_at / generation_started_at / updated_at	timestamps para reconciliação
+
+SQLite por ser ACID e não exigir infraestrutura externa — a durabilidade e a capacidade de retomar de onde parou nascem inteiramente daqui. Se houver necessidade de visibilidade remota (dashboard, outro agente do pipeline), o SQLite pode ser espelhado para Supabase, mas a verdade operacional nunca depende de rede no meio do run.
+
+2.2 Session Manager
+
+Responsável só por uma pergunta: estamos logados agora? Roda antes de cada job, não só no boot. Nunca tenta relogar sozinho — login é sempre ação humana. Quando detecta logout, o sistema inteiro pausa.
+
+2.3 State Reader (read_screen_state)
+
+O componente mais importante do sistema. Depois de qualquer ação relevante, verifica, em ordem fixa de prioridade, qual estado está presente na tela:
+
+logged_out > quota_exhausted > content_rejected > error_toast >
+result_ready > still_generating > unknown
+
+Retorna o primeiro que bater. Nunca conclui por eliminação. unknown é sempre tratado como falha registrada com screenshot — nunca como sucesso.
+
+2.4 Worker (executor)
+
+Puxa um job pending, dirige a UI (limpa overlays → digita prompt → gera → faz polling de estado → baixa), e atualiza o Job Store. É stateless quanto a progresso: tudo que importa sobre "onde estamos" vive no banco, nunca na memória do processo. Isso é o que permite matar e reiniciar o worker sem perda.
+
+2.5 Watchdog (nível de processo)
+
+Camada externa ao Playwright. Cuida do que a própria página não consegue avisar sozinha:
+
+Timeout de parede (wall-clock) por job — se estourar, mata o grupo/árvore de processos do browser à força e sobe um novo.
+Reinício do worker em caso de crash, com backoff.
+Reconciliação no boot (ver 3.8).
+3. Fluxo de resolução por tipo de falha
+3.1 Login/sessão expirada
+
+Sinal: URL contém padrão de login/auth, ou marcador de "logado" ausente.
+Ação: job atual volta para pending (não conta como tentativa). Sistema muda para paused-auth, dispara alerta. Retomada é sempre manual.
+
+3.2 Estado de geração ambíguo
+
+Sinal: resolvido pelo State Reader — o polling só aceita result_ready como sucesso. error_toast e content_rejected são estados próprios, não "ausência de spinner".
+Ação: tabela única de mapeamento estado → próxima ação → status do job. Adicionar um estado novo descoberto em produção é uma linha na tabela, não uma refatoração.
+
+3.3 Filtro de conteúdo
+
+Sinal: toast/modal de rejeição de prompt.
+Ação: marcado como failed-content (categoria própria, não failed genérico — separa problema de prompt de problema de infraestrutura nas métricas). Não há retry automático — vai para revisão humana ou, opcionalmente, para uma etapa explícita de reescrita de prompt (reaproveitando o vocabulário neutro já validado no pipeline de Kling), nunca implícita.
+
+3.4 Selector drift
+
+Prevenção: seletores centralizados num único dicionário, priorizando role/texto sobre classe CSS/xpath. Erro de "elemento não encontrado" (distinto de timeout de geração) loga qual chave falhou, não um erro genérico.
+
+3.5 Bot detection / rate limit / captcha
+
+Sinal: cai em unknown do State Reader, ou assinatura própria de captcha.
+Ação: não há bypass — a estratégia é evitar o gatilho: jitter aleatório entre jobs, teto configurável de gerações por hora, e pausa automática (paused-blocked) se unknown se repetir. Único ponto do sistema onde o objetivo é detectar cedo e parar, não resolver 100%.
+
+3.6 Download
+
+Sinal: validação por tamanho de arquivo (>100KB), MIME real `video/*` e extensão aceita, não apenas disparo do evento de download.
+Ação: exportação é submáquina (`result_ready → menu → modal → qualidade → renderização → download`). O arquivo só é publicado depois das três validações e de movimento no mesmo filesystem.
+
+3.7 Página travada sem erro
+
+Sinal: não detectável de dentro da página — é o timeout de parede do Watchdog.
+Ação: mata o processo do browser à força e sobe um novo. Job em andamento é resolvido pela reconciliação (3.8).
+
+3.8 Dessincronia após crash
+
+Ação: no boot, `claimed` sem `generation_started_at` volta para `pending`. Uma geração com início dentro do budget torna-se `stale_generating` e não pode ser re-claimada; somente após expirar o budget ela volta a `pending`. Isso impede duas gerações concorrentes na mesma conta após crash.
+
+3.9 Quota/créditos
+
+Sinal: estado próprio no State Reader ("limite atingido"/"sem créditos").
+Ação: pausa o sistema inteiro (paused-quota) sem marcar jobs restantes como falha — apenas congela a fila até retomada manual.
+
+3.10 Modais aleatórios
+
+Ação: passo de limpeza de overlays antes de toda ação importante (digitar, gerar, baixar). Baixo custo, roda sempre.
+
+4. Decisões estruturais e por quê
+Decisão	Alternativa descartada	Motivo
+SQLite como job store	Estado em memória / arquivo JSON	Falta de atomicidade e resistência a crash
+Um contexto persistente com N abas isoladas	N processos disputando o mesmo perfil	Preserva a sessão e isola página, estado e download por job
+Sessão persistida, login manual	Automação de credencial + MFA	Fragilidade e risco de flag anti-bot muito maiores
+Estado positivo mutuamente exclusivo	Inferência por ausência de spinner	Elimina a principal fonte de falso-sucesso
+Watchdog externo ao Playwright	Apenas try/except dentro do fluxo	Page freeze não lança exceção — precisa de vigilância de fora
+Execução headed (com xvfb se em servidor)	Headless	Headless quebra detecção e renderização do Firefly
+5. Limites reconhecidos (não resolvidos por engenharia)
+Bot detection/captcha: mitigado, não eliminado. Contorno agressivo fere o ToS da Adobe — a arquitetura assume ritmo humano em conta própria, não evasão garantida.
+Escala local: até o limite configurado de abas no mesmo contexto. Escala por contas continua exigindo N perfis e processos independentes. Concorrência maior aumenta consumo de memória, créditos e risco de rate limit.
+Mudança de UI da Adobe: seletores vão apodrecer com o tempo; a centralização reduz o custo de manutenção, não o elimina.
+6. Ordem de implementação recomendada
+read_screen_state + tabela de estados (resolve 3.2, 3.3, 3.9, 3.10)
+Reconciliação no boot + timeout de parede no watchdog (resolve 3.7, 3.8)
+Check de sessão antes de cada job + pausa (resolve 3.1)
+Validação de download por tamanho (resolve 3.6)
+Jitter + teto por hora + pausa em unknown repetido (resolve 3.5 — mitigação)
+Seletores centralizados por role/texto (resolve 3.4 — manutenção contínua)
