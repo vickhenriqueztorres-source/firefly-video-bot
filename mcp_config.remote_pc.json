@@ -1,0 +1,31 @@
+{
+  "mcpServers": {
+    "chief-youtube": {
+      "command": "ssh",
+      "args": [
+        "brend@192.168.0.4",
+        "python",
+        "\"D:/CHIEF YOUTUBE/src/mcp/youtube_analytics_mcp.py\""
+      ],
+      "type": "stdio"
+    },
+    "hermes-codex-bridge": {
+      "command": "ssh",
+      "args": [
+        "brend@192.168.0.4",
+        "python",
+        "\"D:/CHIEF YOUTUBE/src/mcp/hermes_codex_bridge_mcp.py\""
+      ],
+      "type": "stdio"
+    },
+    "el-profe-de-velas": {
+      "command": "ssh",
+      "args": [
+        "brend@192.168.0.4",
+        "python",
+        "\"D:/CHIEF YOUTUBE/src/mcp/hermes_codex_bridge_mcp.py\""
+      ],
+      "type": "stdio"
+    }
+  }
+}
